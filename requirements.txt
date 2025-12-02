@@ -1,3 +1,0 @@
-customtkinter
-matplotlib
-mysql-connector-python
