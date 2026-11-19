@@ -1,117 +1,281 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import api from '../services/api';
+import { QuizQuestion, QuizAttempt } from '../types';
 
-interface Question {
-    question: string;
-    options: string[];
-    answer: string;
+interface Props {
+    subjectId: number;
+    subjectName: string;
+    onDataChanged?: () => void;
 }
 
-export function AIQuizTool() {
+export function AIQuizTool({ subjectId, subjectName, onDataChanged }: Props) {
     const [notes, setNotes] = useState('');
-    const [questions, setQuestions] = useState<Question[]>([]);
+    const [numQuestions, setNumQuestions] = useState(4);
+    const [difficulty, setDifficulty] = useState('Intermediário');
+    const [questions, setQuestions] = useState<QuizQuestion[]>([]);
     const [loading, setLoading] = useState(false);
-    
-    // Estado para controlar respostas do usuário (índice da pergunta -> resposta escolhida)
-    const [userAnswers, setUserAnswers] = useState<{[key: number]: string}>({});
+
+    const [userAnswers, setUserAnswers] = useState<Record<number, string>>({});
     const [showResults, setShowResults] = useState(false);
+    const [attempts, setAttempts] = useState<QuizAttempt[]>([]);
+    const [savedCardIndexes, setSavedCardIndexes] = useState<Record<number, boolean>>({});
+
+    const fetchAttempts = async () => {
+        try {
+            const res = await api.get<QuizAttempt[]>(`/subjects/${subjectId}/quizzes`);
+            setAttempts(res.data);
+        } catch (error) {
+            console.error('Erro ao buscar histórico de quizzes', error);
+        }
+    };
+
+    useEffect(() => {
+        fetchAttempts();
+    }, [subjectId]);
+
+    const handleLoadSampleText = () => {
+        setNotes(
+            'Na arquitetura de microsserviços distribuídos, o padrão Circuit Breaker impede que falhas em um serviço ' +
+            'remoto se propaguem em cascata por toda a plataforma. Ele opera como uma máquina de estados com três fases: ' +
+            'Closed (fluxo normal monitorando taxa de erro), Open (rejeição rápida com fallback local) e Half-Open ' +
+            '(envio controlado de requisições de sonda para verificar recuperação). Em conjunto com filas assíncronas ' +
+            'e consumidores idempotentes, garante alta resiliência e tolerância a partições.'
+        );
+    };
 
     const handleGenerate = async () => {
-        if (!notes) return;
+        if (notes.trim().length < 50) return;
         setLoading(true);
         setQuestions([]);
         setShowResults(false);
         setUserAnswers({});
+        setSavedCardIndexes({});
 
         try {
-            const response = await api.post('/ai/generate_quiz', { text: notes });
+            const response = await api.post<QuizQuestion[]>('/ai/generate_quiz', {
+                text: notes,
+                num_questions: numQuestions,
+                difficulty,
+            });
             setQuestions(response.data);
         } catch (error) {
-            alert("Erro ao gerar quiz. Verifique se o texto é longo o suficiente.");
+            console.error('Erro ao gerar quiz:', error);
         } finally {
             setLoading(false);
         }
     };
 
     const handleOptionSelect = (qIndex: number, option: string) => {
-        if (showResults) return; // Trava mudanças após ver resultado
-        setUserAnswers(prev => ({...prev, [qIndex]: option}));
+        if (showResults) return;
+        setUserAnswers((prev) => ({ ...prev, [qIndex]: option }));
     };
 
+    const handleVerifyResults = async () => {
+        setShowResults(true);
+        const correctCount = questions.reduce(
+            (acc, q, idx) => acc + (userAnswers[idx] === q.answer ? 1 : 0),
+            0
+        );
+        try {
+            await api.post('/quizzes/attempts', {
+                subject_id: subjectId,
+                topic_summary: `${subjectName} (${difficulty})`,
+                total_questions: questions.length,
+                correct_answers: correctCount,
+            });
+            fetchAttempts();
+            onDataChanged?.();
+        } catch (error) {
+            console.error('Erro ao registrar tentativa de quiz', error);
+        }
+    };
+
+    const handleConvertQuestionToFlashcard = async (q: QuizQuestion, idx: number) => {
+        try {
+            await api.post('/flashcards/', {
+                subject_id: subjectId,
+                front: q.question,
+                back: `${q.answer}${q.explanation ? ` — ${q.explanation}` : ''}`,
+                difficulty_tag: 'Difícil',
+            });
+            setSavedCardIndexes((prev) => ({ ...prev, [idx]: true }));
+            onDataChanged?.();
+        } catch (error) {
+            console.error('Erro ao converter questão em flashcard', error);
+        }
+    };
+
+    const correctCount = questions.reduce(
+        (acc, q, idx) => acc + (userAnswers[idx] === q.answer ? 1 : 0),
+        0
+    );
+
     return (
-        <div style={{ textAlign: 'left', maxWidth: '600px', margin: '0 auto' }}>
-            
-            {/* Área de Input */}
-            {!questions.length && (
-                <div className="card">
-                    <h3>🧠 Gerador de Quiz com IA</h3>
-                    <p style={{ fontSize: '0.9rem', color: '#666' }}>
-                        Cole suas anotações ou um texto sobre a matéria, e a IA criará um teste para você.
+        <div className="module-section">
+            <div className="module-toolbar">
+                <div>
+                    <h3>🧠 Simulador de Quiz Ativo com IA & Conversão de Erros</h3>
+                    <p className="module-subtitle">
+                        Transforme qualquer resumo ou artigo em um simulado com explicação pedagógica e converta dúvidas diretamente em Flashcards SRS.
                     </p>
-                    <textarea 
-                        rows={6}
+                </div>
+                {!questions.length && (
+                    <button className="btn-secondary-action" onClick={handleLoadSampleText}>
+                        📄 Carregar Texto Técnico de Exemplo
+                    </button>
+                )}
+            </div>
+
+            {!questions.length ? (
+                <div className="quiz-generator-box">
+                    <div className="quiz-controls-row">
+                        <div className="form-field">
+                            <label>Nível de Profundidade Cognitiva</label>
+                            <select
+                                className="select-input"
+                                value={difficulty}
+                                onChange={(e) => setDifficulty(e.target.value)}
+                            >
+                                <option value="Iniciante">Iniciante (Conceitos Fundamentais)</option>
+                                <option value="Intermediário">Intermediário (Aplicação & Relações)</option>
+                                <option value="Avançado">Avançado (Arquitetura & Casos Críticos)</option>
+                            </select>
+                        </div>
+                        <div className="form-field">
+                            <label>Quantidade de Questões</label>
+                            <select
+                                className="select-input"
+                                value={numQuestions}
+                                onChange={(e) => setNumQuestions(Number(e.target.value))}
+                            >
+                                <option value={3}>3 Questões Rápidas</option>
+                                <option value={4}>4 Questões Padrão</option>
+                                <option value={6}>6 Questões Aprofundadas</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <textarea
+                        rows={5}
                         value={notes}
                         onChange={(e) => setNotes(e.target.value)}
-                        placeholder="Cole seu texto de estudo aqui... (Mínimo 50 caracteres)"
-                        style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #ddd', marginBottom: '10px' }}
+                        placeholder="Cole suas anotações, resumo de artigo ou transcrição de aula aqui (mínimo 50 caracteres)..."
                     />
-                    <button onClick={handleGenerate} disabled={loading || notes.length < 50}>
-                        {loading ? '🤖 A IA está pensando...' : '✨ Gerar Quiz Automático'}
-                    </button>
-                </div>
-            )}
 
-            {/* Área do Quiz Gerado */}
-            {questions.length > 0 && (
-                <div className="quiz-container">
-                    <h3>📝 Quiz Gerado</h3>
-                    
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
+                        <span className="char-counter">{notes.length} caracteres digitados (mínimo 50)</span>
+                        <button
+                            className="btn-primary-action"
+                            onClick={handleGenerate}
+                            disabled={loading || notes.trim().length < 50}
+                        >
+                            {loading ? '🤖 Gerando Questões Contextualizadas...' : '✨ Gerar Simulado com Explicações'}
+                        </button>
+                    </div>
+                </div>
+            ) : (
+                <div className="quiz-active-container">
+                    {showResults && (
+                        <div className="quiz-score-banner">
+                            <div>
+                                <h4>
+                                    Resultado do Simulado: {correctCount} de {questions.length} acertos (
+                                    {Math.round((correctCount / questions.length) * 100)}%)
+                                </h4>
+                                <p>Revise as explicações abaixo e envie questões desafiadoras para seu deck de Repetição Espaçada SRS.</p>
+                            </div>
+                            <button className="btn-secondary-action" onClick={() => setQuestions([])}>
+                                ↻ Gerar Novo Simulado
+                            </button>
+                        </div>
+                    )}
+
                     {questions.map((q, qIndex) => (
-                        <div key={qIndex} className="card" style={{ marginBottom: '15px' }}>
-                            <p style={{ fontWeight: 'bold', marginBottom: '10px' }}>{qIndex + 1}. {q.question}</p>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <div key={qIndex} className="quiz-question-card">
+                            <div className="quiz-question-header">
+                                <span className="badge-pill" style={{ background: '#eef2ff', color: '#4338ca' }}>
+                                    Questão {qIndex + 1} {q.topic_tag ? `• ${q.topic_tag}` : ''}
+                                </span>
+                                <button
+                                    className="btn-outline-sm"
+                                    disabled={!!savedCardIndexes[qIndex]}
+                                    onClick={() => handleConvertQuestionToFlashcard(q, qIndex)}
+                                >
+                                    {savedCardIndexes[qIndex] ? '✓ Adicionado ao Deck SRS' : '🃏 Converter em Flashcard SRS'}
+                                </button>
+                            </div>
+
+                            <p className="quiz-question-title">{q.question}</p>
+
+                            <div className="quiz-options-list">
                                 {q.options.map((opt, optIndex) => {
                                     const isSelected = userAnswers[qIndex] === opt;
                                     const isCorrect = opt === q.answer;
-                                    
-                                    let bgColor = '#f9f9f9';
+
+                                    let statusClass = '';
                                     if (showResults) {
-                                        if (isCorrect) bgColor = '#d4edda'; // Verde
-                                        else if (isSelected && !isCorrect) bgColor = '#f8d7da'; // Vermelho
+                                        if (isCorrect) statusClass = 'opt-correct';
+                                        else if (isSelected && !isCorrect) statusClass = 'opt-wrong';
                                     } else if (isSelected) {
-                                        bgColor = '#e3f2fd'; // Azul claro seleção
+                                        statusClass = 'opt-selected';
                                     }
 
                                     return (
-                                        <div 
+                                        <div
                                             key={optIndex}
                                             onClick={() => handleOptionSelect(qIndex, opt)}
-                                            style={{
-                                                padding: '10px',
-                                                border: '1px solid #eee',
-                                                borderRadius: '6px',
-                                                cursor: showResults ? 'default' : 'pointer',
-                                                backgroundColor: bgColor,
-                                                transition: 'background 0.3s'
-                                            }}
+                                            className={`quiz-option-row ${statusClass}`}
                                         >
-                                            {opt}
+                                            <span className="opt-letter">{String.fromCharCode(65 + optIndex)}</span>
+                                            <span>{opt}</span>
                                         </div>
                                     );
                                 })}
                             </div>
+
+                            {showResults && q.explanation && (
+                                <div className="quiz-explanation-box">
+                                    <strong>💡 Explicação Pedagógica:</strong> {q.explanation}
+                                </div>
+                            )}
                         </div>
                     ))}
 
-                    {!showResults ? (
-                        <button onClick={() => setShowResults(true)} style={{ backgroundColor: '#2ecc71', marginBottom: '10px' }}>
-                            Verificar Respostas
-                        </button>
-                    ) : (
-                        <button onClick={() => setQuestions([])} style={{ backgroundColor: '#666' }}>
-                            Criar Novo Quiz
-                        </button>
+                    {!showResults && (
+                        <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                            <button className="btn-secondary-action" onClick={() => setQuestions([])}>
+                                Cancelar
+                            </button>
+                            <button className="btn-primary-action" onClick={handleVerifyResults}>
+                                ✅ Corrigir Simulado e Registrar Retenção
+                            </button>
+                        </div>
                     )}
+                </div>
+            )}
+
+            {attempts.length > 0 && (
+                <div className="quiz-history-panel">
+                    <h4>📊 Histórico de Desempenho em Quizzes ({attempts.length})</h4>
+                    <div className="quiz-attempts-grid">
+                        {attempts.slice(0, 6).map((att) => (
+                            <div key={att.id} className="quiz-attempt-badge">
+                                <div>
+                                    <strong>{att.topic_summary}</strong>
+                                    <span>{att.correct_answers}/{att.total_questions} questões corretas</span>
+                                </div>
+                                <span
+                                    className="score-tag"
+                                    style={{
+                                        background: att.score_percent >= 80 ? '#ecfdf5' : '#fffbeb',
+                                        color: att.score_percent >= 80 ? '#059669' : '#d97706',
+                                    }}
+                                >
+                                    {att.score_percent}%
+                                </span>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             )}
         </div>
